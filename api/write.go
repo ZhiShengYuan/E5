@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"e5autocaller/auth"
@@ -16,9 +17,11 @@ import (
 )
 
 type WriteRunner struct {
-	cfg      *config.Config
-	clients  []*auth.TokenManager
-	notifier notifier.Notifier
+	cfg        *config.Config
+	clients    []*auth.TokenManager
+	notifier   notifier.Notifier
+	totalTasks int
+	failures   []string
 }
 
 func NewWriteRunner(cfg *config.Config, n notifier.Notifier) *WriteRunner {
@@ -40,7 +43,14 @@ func NewWriteRunner(cfg *config.Config, n notifier.Notifier) *WriteRunner {
 	return &WriteRunner{cfg: cfg, clients: clients, notifier: n}
 }
 
+func (w *WriteRunner) recordFailure(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Println(msg)
+	w.failures = append(w.failures, msg)
+}
+
 func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url string, data any) (string, error) {
+	w.totalTasks++
 	if w.cfg.WriteConfig.ApiDelay.Enabled {
 		delay := rand.Intn(w.cfg.WriteConfig.ApiDelay.Max-w.cfg.WriteConfig.ApiDelay.Min+1) + w.cfg.WriteConfig.ApiDelay.Min
 		time.Sleep(time.Duration(delay) * time.Second)
@@ -48,9 +58,8 @@ func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url strin
 
 	token, err := client.GetAccessToken()
 	if err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] Write mode token failure for account %d: %v", client.AppNum(), err)
+		w.recordFailure("[E5Autocaller] Write mode token failure for account %d: %v", client.AppNum(), err)
 		fmt.Println("        操作失败")
-		w.notifier.Notify(msg)
 		return "", err
 	}
 
@@ -61,9 +70,8 @@ func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url strin
 
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] Write mode request build failure: %v", err)
+		w.recordFailure("[E5Autocaller] Write mode request build failure: %v", err)
 		fmt.Println("        操作失败")
-		w.notifier.Notify(msg)
 		return "", err
 	}
 	req.Header.Set("Authorization", "bearer "+token)
@@ -71,9 +79,8 @@ func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url strin
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] Write mode request failure: %v", err)
+		w.recordFailure("[E5Autocaller] Write mode request failure: %v", err)
 		fmt.Println("        操作失败")
-		w.notifier.Notify(msg)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -84,22 +91,21 @@ func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url strin
 	if resp.StatusCode < 300 {
 		fmt.Println("        操作成功")
 	} else {
-		msg := fmt.Sprintf("[E5Autocaller] Write mode request returned status %d", resp.StatusCode)
+		w.recordFailure("[E5Autocaller] Write mode request returned status %d", resp.StatusCode)
 		fmt.Println("        操作失败")
-		w.notifier.Notify(msg)
 	}
 
 	return respBody.String(), nil
 }
 
 func (w *WriteRunner) UploadFile(client *auth.TokenManager, appNum int, filename string, data []byte) {
+	w.totalTasks++
 	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/me/drive/root:/AutoApi/App%d/%s:/content", appNum, filename)
 	req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
 	token, err := client.GetAccessToken()
 	if err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] UploadFile token failure for account %d: %v", appNum, err)
+		w.recordFailure("[E5Autocaller] UploadFile token failure for account %d: %v", appNum, err)
 		fmt.Println("        上传失败")
-		w.notifier.Notify(msg)
 		return
 	}
 	req.Header.Set("Authorization", "bearer "+token)
@@ -107,9 +113,8 @@ func (w *WriteRunner) UploadFile(client *auth.TokenManager, appNum int, filename
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode >= 300 {
-		msg := fmt.Sprintf("[E5Autocaller] UploadFile failure for account %d: status=%d err=%v", appNum, resp.StatusCode, err)
+		w.recordFailure("[E5Autocaller] UploadFile failure for account %d: status=%d err=%v", appNum, resp.StatusCode, err)
 		fmt.Println("        上传失败")
-		w.notifier.Notify(msg)
 	} else {
 		fmt.Println("        上传成功")
 	}
@@ -122,6 +127,7 @@ func (w *WriteRunner) SendEmail(client *auth.TokenManager, appNum int, subject, 
 	if w.cfg.Email == "" {
 		return
 	}
+	w.totalTasks++
 	url := "https://graph.microsoft.com/v1.0/me/sendMail"
 	mailMsg := map[string]any{
 		"message": map[string]any{
@@ -137,8 +143,7 @@ func (w *WriteRunner) SendEmail(client *auth.TokenManager, appNum int, subject, 
 		"saveToSentItems": "true",
 	}
 	if _, err := w.apiReq("POST", client, url, mailMsg); err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] SendEmail failure for account %d: %v", appNum, err)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] SendEmail failure for account %d: %v", appNum, err)
 	}
 }
 
@@ -147,8 +152,6 @@ func (w *WriteRunner) ExcelWrite(client *auth.TokenManager, appNum int, filename
 
 	fmt.Println("    添加工作表")
 	if _, err := w.apiReq("POST", client, baseURL+"/worksheets/add", map[string]string{"name": sheet}); err != nil {
-		msg := fmt.Sprintf("[E5Autocaller] ExcelWrite add worksheet failure for account %d: %v", appNum, err)
-		w.notifier.Notify(msg)
 		return
 	}
 
@@ -163,8 +166,7 @@ func (w *WriteRunner) ExcelWrite(client *auth.TokenManager, appNum int, filename
 	}
 	json.Unmarshal([]byte(resp), &tableResp)
 	if tableResp.ID == "" {
-		msg := fmt.Sprintf("[E5Autocaller] ExcelWrite failed to get table ID for account %d", appNum)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] ExcelWrite failed to get table ID for account %d", appNum)
 		return
 	}
 
@@ -194,8 +196,7 @@ func (w *WriteRunner) TaskWrite(client *auth.TokenManager, appNum int, taskname 
 	}
 	json.Unmarshal([]byte(resp), &listResp)
 	if listResp.ID == "" {
-		msg := fmt.Sprintf("[E5Autocaller] TaskWrite failed to get list ID for account %d", appNum)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] TaskWrite failed to get list ID for account %d", appNum)
 		return
 	}
 
@@ -211,8 +212,7 @@ func (w *WriteRunner) TaskWrite(client *auth.TokenManager, appNum int, taskname 
 	}
 	json.Unmarshal([]byte(resp), &taskResp)
 	if taskResp.ID == "" {
-		msg := fmt.Sprintf("[E5Autocaller] TaskWrite failed to get task ID for account %d", appNum)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] TaskWrite failed to get task ID for account %d", appNum)
 		return
 	}
 
@@ -258,8 +258,7 @@ func (w *WriteRunner) TeamWrite(client *auth.TokenManager, appNum int, channelna
 	}
 	json.Unmarshal([]byte(resp), &channelResp)
 	if channelResp.ID == "" {
-		msg := fmt.Sprintf("[E5Autocaller] TeamWrite failed to get channel ID for account %d", appNum)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] TeamWrite failed to get channel ID for account %d", appNum)
 		return
 	}
 
@@ -280,8 +279,7 @@ func (w *WriteRunner) OnenoteWrite(client *auth.TokenManager, appNum int, notena
 	}
 	json.Unmarshal([]byte(resp), &noteResp)
 	if noteResp.ID == "" {
-		msg := fmt.Sprintf("[E5Autocaller] OnenoteWrite failed to get notebook ID for account %d", appNum)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] OnenoteWrite failed to get notebook ID for account %d", appNum)
 		return
 	}
 
@@ -292,6 +290,7 @@ func (w *WriteRunner) OnenoteWrite(client *auth.TokenManager, appNum int, notena
 
 func (w *WriteRunner) Run() error {
 	// 获取天气
+	w.totalTasks++
 	weather := ""
 	weatherResp, err := http.Get(fmt.Sprintf("http://wttr.in/%s?format=4&m", w.cfg.City))
 	if err == nil {
@@ -300,8 +299,7 @@ func (w *WriteRunner) Run() error {
 		weatherResp.Body.Close()
 		weather = buf.String()
 	} else {
-		msg := fmt.Sprintf("[E5Autocaller] 获取天气失败: %v", err)
-		w.notifier.Notify(msg)
+		w.recordFailure("[E5Autocaller] 获取天气失败: %v", err)
 	}
 
 	// 发送邮件
@@ -337,9 +335,7 @@ func (w *WriteRunner) Run() error {
 			xlsPath := filepath.Join(os.TempDir(), filename)
 			f, err := os.Create(xlsPath)
 			if err != nil {
-				msg := fmt.Sprintf("[E5Autocaller] 账号 %d 创建临时文件失败: %v", appNum, err)
-				fmt.Println(msg)
-				w.notifier.Notify(msg)
+				w.recordFailure("[E5Autocaller] 账号 %d 创建临时文件失败: %v", appNum, err)
 				continue
 			}
 			f.Write([]byte("PK"))
@@ -347,9 +343,7 @@ func (w *WriteRunner) Run() error {
 
 			data, err := os.ReadFile(xlsPath)
 			if err != nil {
-				msg := fmt.Sprintf("[E5Autocaller] 账号 %d 读取临时文件失败: %v", appNum, err)
-				fmt.Println(msg)
-				w.notifier.Notify(msg)
+				w.recordFailure("[E5Autocaller] 账号 %d 读取临时文件失败: %v", appNum, err)
 				continue
 			}
 
@@ -380,6 +374,13 @@ func (w *WriteRunner) Run() error {
 			}
 			fmt.Println("-")
 		}
+	}
+
+	// 批量通知：失败率 >= 50% 才发
+	if w.totalTasks > 0 && len(w.failures)*2 >= w.totalTasks {
+		summary := fmt.Sprintf("[E5Autocaller Write] %d/%d tasks failed (\u003e=50%%)\n", len(w.failures), w.totalTasks)
+		summary += strings.Join(w.failures, "\n")
+		w.notifier.Notify(summary)
 	}
 
 	return nil

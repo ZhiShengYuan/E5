@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"e5autocaller/auth"
@@ -86,6 +87,9 @@ func (r *ReadRunner) Run() error {
 		apiList = []int{5, 9, 8, 1, 20, 24, 23, 6, 21, 22}
 	}
 
+	totalTasks := 0
+	var failures []string
+
 	for round := 1; round <= r.cfg.ReadConfig.Rounds; round++ {
 		if r.cfg.ReadConfig.RoundsDelay.Enabled {
 			delay := rand.Intn(r.cfg.ReadConfig.RoundsDelay.Max-r.cfg.ReadConfig.RoundsDelay.Min+1) + r.cfg.ReadConfig.RoundsDelay.Min
@@ -110,7 +114,7 @@ func (r *ReadRunner) Run() error {
 			if err != nil {
 				msg := fmt.Sprintf("[E5Autocaller] 账号 %d 获取token失败: %v", appNum, err)
 				fmt.Println(msg)
-				r.notifier.Notify(msg)
+				failures = append(failures, msg)
 				continue
 			}
 
@@ -118,6 +122,7 @@ func (r *ReadRunner) Run() error {
 				if apiIdx >= len(readAPIList) {
 					continue
 				}
+				totalTasks++
 				url := readAPIList[apiIdx]
 				req, _ := http.NewRequest("GET", url, nil)
 				req.Header.Set("Authorization", "bearer "+token)
@@ -127,7 +132,7 @@ func (r *ReadRunner) Run() error {
 				if err != nil {
 					msg := fmt.Sprintf("[E5Autocaller] 账号 %d API %d 请求失败: %v", appNum, apiIdx, err)
 					fmt.Println("pass")
-					r.notifier.Notify(msg)
+					failures = append(failures, msg)
 					continue
 				}
 				resp.Body.Close()
@@ -137,7 +142,7 @@ func (r *ReadRunner) Run() error {
 				} else {
 					msg := fmt.Sprintf("[E5Autocaller] 账号 %d API %d 返回非200状态码: %d", appNum, apiIdx, resp.StatusCode)
 					fmt.Println("pass")
-					r.notifier.Notify(msg)
+					failures = append(failures, msg)
 				}
 
 				if r.cfg.ReadConfig.ApiDelay.Enabled {
@@ -146,6 +151,13 @@ func (r *ReadRunner) Run() error {
 				}
 			}
 		}
+	}
+
+	// 批量通知：失败率 >= 50% 才发
+	if totalTasks > 0 && len(failures)*2 >= totalTasks {
+		summary := fmt.Sprintf("[E5Autocaller Read] %d/%d tasks failed (\u003e=50%%)\n", len(failures), totalTasks)
+		summary += strings.Join(failures, "\n")
+		r.notifier.Notify(summary)
 	}
 
 	return nil
