@@ -25,21 +25,26 @@ func main() {
 
 	var n notifier.Notifier = notifier.NewTelegramNotifier(cfg.Telegram.BotToken, cfg.Telegram.ChatID)
 
+	var runErr error
 	switch *mode {
 	case "read":
-		runner := api.NewReadRunner(cfg.ReadConfig, cfg.Accounts, n)
-		if err := runner.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Read mode failed: %v\n", err)
-			os.Exit(1)
-		}
+		runner := api.NewReadRunner(cfg, n)
+		runErr = runner.Run()
 	case "write":
-		runner := api.NewWriteRunner(cfg.WriteConfig, cfg.Accounts, cfg.Email, cfg.City, n)
-		if err := runner.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Write mode failed: %v\n", err)
-			os.Exit(1)
-		}
+		runner := api.NewWriteRunner(cfg, n)
+		runErr = runner.Run()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown mode: %s (use 'read' or 'write')\n", *mode)
+		os.Exit(1)
+	}
+
+	// 无论运行成功与否，持久化可能已更新的 refresh_token
+	if saveErr := config.Save(*configPath, cfg); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", saveErr)
+	}
+
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "%s mode failed: %v\n", *mode, runErr)
 		os.Exit(1)
 	}
 }

@@ -16,24 +16,33 @@ import (
 )
 
 type WriteRunner struct {
-	cfg      config.WriteConfig
+	cfg      *config.Config
 	clients  []*auth.TokenManager
-	email    string
-	city     string
 	notifier notifier.Notifier
 }
 
-func NewWriteRunner(cfg config.WriteConfig, accounts []config.Account, email, city string, n notifier.Notifier) *WriteRunner {
-	clients := make([]*auth.TokenManager, len(accounts))
-	for i, acc := range accounts {
-		clients[i] = auth.NewTokenManager(acc.ClientID, acc.ClientSecret, acc.RefreshToken, acc.RedirectURI, i+1, n)
+func NewWriteRunner(cfg *config.Config, n notifier.Notifier) *WriteRunner {
+	clients := make([]*auth.TokenManager, len(cfg.Accounts))
+	for i := range cfg.Accounts {
+		idx := i
+		clients[i] = auth.NewTokenManager(
+			cfg.Accounts[i].ClientID,
+			cfg.Accounts[i].ClientSecret,
+			cfg.Accounts[i].RefreshToken,
+			cfg.Accounts[i].RedirectURI,
+			i+1,
+			n,
+			func(newToken string) {
+				cfg.Accounts[idx].RefreshToken = newToken
+			},
+		)
 	}
-	return &WriteRunner{cfg: cfg, clients: clients, email: email, city: city, notifier: n}
+	return &WriteRunner{cfg: cfg, clients: clients, notifier: n}
 }
 
 func (w *WriteRunner) apiReq(method string, client *auth.TokenManager, url string, data any) (string, error) {
-	if w.cfg.ApiDelay.Enabled {
-		delay := rand.Intn(w.cfg.ApiDelay.Max-w.cfg.ApiDelay.Min+1) + w.cfg.ApiDelay.Min
+	if w.cfg.WriteConfig.ApiDelay.Enabled {
+		delay := rand.Intn(w.cfg.WriteConfig.ApiDelay.Max-w.cfg.WriteConfig.ApiDelay.Min+1) + w.cfg.WriteConfig.ApiDelay.Min
 		time.Sleep(time.Duration(delay) * time.Second)
 	}
 
@@ -110,7 +119,7 @@ func (w *WriteRunner) UploadFile(client *auth.TokenManager, appNum int, filename
 }
 
 func (w *WriteRunner) SendEmail(client *auth.TokenManager, appNum int, subject, content string) {
-	if w.email == "" {
+	if w.cfg.Email == "" {
 		return
 	}
 	url := "https://graph.microsoft.com/v1.0/me/sendMail"
@@ -122,7 +131,7 @@ func (w *WriteRunner) SendEmail(client *auth.TokenManager, appNum int, subject, 
 				"content":     content,
 			},
 			"toRecipients": []map[string]any{
-				{"emailAddress": map[string]string{"address": w.email}},
+				{"emailAddress": map[string]string{"address": w.cfg.Email}},
 			},
 		},
 		"saveToSentItems": "true",
@@ -284,7 +293,7 @@ func (w *WriteRunner) OnenoteWrite(client *auth.TokenManager, appNum int, notena
 func (w *WriteRunner) Run() error {
 	// 获取天气
 	weather := ""
-	weatherResp, err := http.Get(fmt.Sprintf("http://wttr.in/%s?format=4&m", w.city))
+	weatherResp, err := http.Get(fmt.Sprintf("http://wttr.in/%s?format=4&m", w.cfg.City))
 	if err == nil {
 		var buf bytes.Buffer
 		buf.ReadFrom(weatherResp.Body)
@@ -300,24 +309,24 @@ func (w *WriteRunner) Run() error {
 		appNum := appIdx + 1
 		fmt.Printf("账号 %d\n", appNum)
 		fmt.Println("发送邮件 ( 邮箱单独运行，每次运行只发送一次，防止封号 )")
-		if w.email != "" {
+		if w.cfg.Email != "" {
 			w.SendEmail(client, appNum, "weather", weather)
 			fmt.Println("")
 		}
 	}
 
 	// 其他写操作
-	for round := 1; round <= w.cfg.Rounds; round++ {
-		if w.cfg.RoundsDelay.Enabled {
-			delay := rand.Intn(w.cfg.RoundsDelay.Max-w.cfg.RoundsDelay.Min+1) + w.cfg.RoundsDelay.Min
+	for round := 1; round <= w.cfg.WriteConfig.Rounds; round++ {
+		if w.cfg.WriteConfig.RoundsDelay.Enabled {
+			delay := rand.Intn(w.cfg.WriteConfig.RoundsDelay.Max-w.cfg.WriteConfig.RoundsDelay.Min+1) + w.cfg.WriteConfig.RoundsDelay.Min
 			time.Sleep(time.Duration(delay) * time.Second)
 		}
 
 		fmt.Printf("第 %d 轮\n\n", round)
 		for appIdx, client := range w.clients {
 			appNum := appIdx + 1
-			if w.cfg.AppDelay.Enabled {
-				delay := rand.Intn(w.cfg.AppDelay.Max-w.cfg.AppDelay.Min+1) + w.cfg.AppDelay.Min
+			if w.cfg.WriteConfig.AppDelay.Enabled {
+				delay := rand.Intn(w.cfg.WriteConfig.AppDelay.Max-w.cfg.WriteConfig.AppDelay.Min+1) + w.cfg.WriteConfig.AppDelay.Min
 				time.Sleep(time.Duration(delay) * time.Second)
 			}
 
@@ -353,19 +362,19 @@ func (w *WriteRunner) Run() error {
 				choosetypes[v+1] = true
 			}
 
-			if w.cfg.AllStart || choosetypes[1] {
+			if w.cfg.WriteConfig.AllStart || choosetypes[1] {
 				fmt.Println("excel文件操作")
 				w.ExcelWrite(client, appNum, filename, fmt.Sprintf("QVQ%d", rand.Intn(600)+1))
 			}
-			if w.cfg.AllStart || choosetypes[2] {
+			if w.cfg.WriteConfig.AllStart || choosetypes[2] {
 				fmt.Println("team操作")
 				w.TeamWrite(client, appNum, fmt.Sprintf("QVQ%d", rand.Intn(600)+1))
 			}
-			if w.cfg.AllStart || choosetypes[3] {
+			if w.cfg.WriteConfig.AllStart || choosetypes[3] {
 				fmt.Println("task操作")
 				w.TaskWrite(client, appNum, fmt.Sprintf("QVQ%d", rand.Intn(600)+1))
 			}
-			if w.cfg.AllStart || choosetypes[4] {
+			if w.cfg.WriteConfig.AllStart || choosetypes[4] {
 				fmt.Println("onenote操作")
 				w.OnenoteWrite(client, appNum, fmt.Sprintf("QVQ%d", rand.Intn(600)+1))
 			}
@@ -374,4 +383,8 @@ func (w *WriteRunner) Run() error {
 	}
 
 	return nil
+}
+
+func (w *WriteRunner) Config() *config.Config {
+	return w.cfg
 }

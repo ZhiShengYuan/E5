@@ -14,9 +14,9 @@ type Account struct {
 }
 
 type DelayConfig struct {
-	Enabled bool
-	Min     int
-	Max     int
+	Enabled bool `json:"enabled"`
+	Min     int  `json:"min"`
+	Max     int  `json:"max"`
 }
 
 func (d *DelayConfig) UnmarshalJSON(data []byte) error {
@@ -101,4 +101,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func Save(path string, cfg *Config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
 }

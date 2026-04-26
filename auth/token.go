@@ -19,6 +19,9 @@ type TokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 }
 
+// OnTokenUpdated is called when a new refresh_token is obtained.
+type OnTokenUpdated func(newRefreshToken string)
+
 type TokenManager struct {
 	clientID     string
 	clientSecret string
@@ -29,9 +32,10 @@ type TokenManager struct {
 	accessToken string
 	expiresAt   time.Time
 	notifier    notifier.Notifier
+	onUpdate    OnTokenUpdated
 }
 
-func NewTokenManager(clientID, clientSecret, refreshToken, redirectURI string, appNum int, n notifier.Notifier) *TokenManager {
+func NewTokenManager(clientID, clientSecret, refreshToken, redirectURI string, appNum int, n notifier.Notifier, onUpdate OnTokenUpdated) *TokenManager {
 	return &TokenManager{
 		clientID:     clientID,
 		clientSecret: clientSecret,
@@ -39,6 +43,7 @@ func NewTokenManager(clientID, clientSecret, refreshToken, redirectURI string, a
 		redirectURI:  redirectURI,
 		appNum:       appNum,
 		notifier:     n,
+		onUpdate:     onUpdate,
 	}
 }
 
@@ -77,6 +82,9 @@ func (tm *TokenManager) Refresh() (string, error) {
 	tm.accessToken = tokenResp.AccessToken
 	if tokenResp.RefreshToken != "" {
 		tm.refreshToken = tokenResp.RefreshToken
+		if tm.onUpdate != nil {
+			tm.onUpdate(tm.refreshToken)
+		}
 	}
 	tm.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
