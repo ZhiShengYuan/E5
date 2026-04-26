@@ -1,0 +1,30 @@
+{
+  "accounts": [
+    {
+      "client_id": "your-client-id",
+      "client_secret": "your-client-secret",
+      "refresh_token": "your-refresh-token",
+      "redirect_uri": "http://localhost:53682/"
+    }
+  ],
+  "email": "",
+  "city": "Beijing",
+  "telegram": {
+    "bot_token": "your-telegram-bot-token",
+    "chat_id": "your-chat-id"
+  },
+  "read_config": {
+    "api_rand": true,
+    "rounds": 3,
+    "rounds_delay": { "enabled": false, "min": 60, "max": 120 },
+    "api_delay": { "enabled": false, "min": 2, "max": 6 },
+    "app_delay": { "enabled": false, "min": 30, "max": 60 }
+  },
+  "write_config": {
+    "allstart": false,
+    "rounds": 1,
+    "rounds_delay": { "enabled": false, "min": 0, "max": 5 },
+    "api_delay": { "enabled": false, "min": 0, "max": 5 },
+    "app_delay": { "enabled": false, "min": 0, "max": 5 }
+  }
+}
